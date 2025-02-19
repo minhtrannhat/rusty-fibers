@@ -12,7 +12,7 @@ pub static mut RUNTIME: usize = 0;
 
 pub struct Runtime {
     threads: Vec<Thread>,
-    current_thread: usize, // pointer to which thread we're running
+    current_thread: usize, // index of the thread we're running
 }
 
 /*
@@ -56,6 +56,10 @@ impl Runtime {
 
     // return function for when a thread is finished
     fn t_return(&mut self) {
+        /* If it's not the base thread,
+         * we move the current thread state to Available
+         * and we yield the control to other threads
+         */
         if self.current_thread != 0 {
             self.threads[self.current_thread].state = ThreadState::Available;
             self.t_yield(); // yield control to other tasks
@@ -73,27 +77,52 @@ impl Runtime {
      *
      * This is only a simple Round-Robin scheduler
      */
-    #[inline(never)] // rustc plz dont optimize
+    #[inline(never)] // rustc please do not inline everything
     fn t_yield(&mut self) -> bool {
         let mut pos = self.current_thread;
 
-        // going through all the threads that we have
+        // Going through all the threads that we have
         while self.threads[pos].state != ThreadState::Ready {
             pos += 1;
             if pos == self.threads.len() {
                 pos = 0;
             }
 
+            // No thread is Available
             if pos == self.current_thread {
                 return false;
             }
         }
 
-        // we found at least one thread in READY state
+        /*
+         *  Reaching here, it means that we've found one thread
+         *  that is either Available or Running
+         */
+
+        /*
+         * First case: the current thread was running
+         * but voluntarily gave up control to other
+         * threads, we put in READY mode
+         * to be scheduled to be returned later
+         *
+         * Here: pos != self.current_thread
+         */
         if self.threads[self.current_thread].state != ThreadState::Available {
             self.threads[self.current_thread].state = ThreadState::Ready;
         };
 
+        /*
+         * Second case: the current thread is already READY
+         * and want to be scheduled
+         *
+         * Here: pos == self.current_thread
+         */
+
+        /*
+         * Here the code applies for both cases
+         *
+         * Second case means overhead when switching
+         */
         self.threads[pos].state = ThreadState::Running;
         let old_pos = self.current_thread;
         self.current_thread = pos;
@@ -102,9 +131,21 @@ impl Runtime {
             let old: *mut ThreadContext = &mut self.threads[old_pos].ctx;
             let new: *const ThreadContext = &self.threads[pos].ctx;
 
+            /* We call the switch function with 2 parameters
+             *
+             * According to the System V x86_64 ABI,
+             * We have to put the first paramter into `rdi` register and
+             * second parameter into `rsi` parameter
+             *
+             * clobber_abi: also for System V x86_64 ABI
+             */
             asm!("call switch", in("rdi") old, in("rsi") new, clobber_abi("C"))
         }
 
-        !self.threads.is_empty()
+        /* Code technically never reaches here
+         * since we already switch to a different thread
+         * via `call switch`
+         */
+        self.threads.len() > 0
     }
 }
